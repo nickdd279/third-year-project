@@ -1,0 +1,962 @@
+/* USER CODE BEGIN Header */
+/**
+  ******************************************************************************
+  * @file           : main.c
+  * @brief          : Main program body
+  ******************************************************************************
+  * @attention
+  *
+  * Copyright (c) 2025 STMicroelectronics.
+  * All rights reserved.
+  *
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
+  *
+  ******************************************************************************
+  */
+/* USER CODE END Header */
+/* Includes ------------------------------------------------------------------*/
+#include "main.h"
+
+/* Private includes ----------------------------------------------------------*/
+/* USER CODE BEGIN Includes */
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+/* USER CODE END Includes */
+
+/* Private typedef -----------------------------------------------------------*/
+/* USER CODE BEGIN PTD */
+typedef struct {
+    float Kp;
+    float Ki;
+    float setpoint;     // Desired current in mA
+    float integral;     // Sum of errors
+    float output_limit; //
+} PI_Controller;
+
+// Initialize it with your tuned values
+PI_Controller motor_current_pi = {
+    .Kp = 0.000054f, //0.000064f try this value for tests.
+    .Ki = 0.1f,
+    .setpoint = 2000.0f, // current setpoint in mA
+    .integral = 0.0f,
+    .output_limit = 0.8f
+};
+/* USER CODE END PTD */
+
+/* Private define ------------------------------------------------------------*/
+/* USER CODE BEGIN PD */
+#define ARR 6250
+/* USER CODE END PD */
+
+/* Private macro -------------------------------------------------------------*/
+/* USER CODE BEGIN PM */
+
+/* USER CODE END PM */
+
+/* Private variables ---------------------------------------------------------*/
+ADC_HandleTypeDef hadc1;
+
+TIM_HandleTypeDef htim1;
+TIM_HandleTypeDef htim2;
+
+UART_HandleTypeDef huart3;
+
+/* USER CODE BEGIN PV */
+
+/* USER CODE END PV */
+
+/* Private function prototypes -----------------------------------------------*/
+void SystemClock_Config(void);
+static void MX_GPIO_Init(void);
+static void MX_ADC1_Init(void);
+static void MX_TIM1_Init(void);
+static void MX_ICACHE_Init(void);
+static void MX_USART3_UART_Init(void);
+static void MX_TIM2_Init(void);
+/* USER CODE BEGIN PFP */
+float update_PI(PI_Controller *pi, float feedback, float dt);
+/* USER CODE END PFP */
+
+/* Private user code ---------------------------------------------------------*/
+/* USER CODE BEGIN 0 */
+volatile uint32_t ADC_current_value = 0;
+volatile float duty_cycle_register = 0.0f;
+float base_duty_cycle_register = 0;
+uint32_t previous_timer_count = 0;
+uint32_t rpm = 0;
+volatile uint32_t HES_counter = 0;
+volatile uint8_t last_valid_hes_state = 0;
+volatile uint8_t hes_state = 0;
+uint32_t counterlol = 0;
+uint32_t base_current_counter = 0;
+
+//variables for serial communication
+uint8_t rx_data;          // Single byte buffer
+char msg_buffer[10];      // Buffer to store the full string "0.45"
+int buffer_index = 0;
+
+//Variables for data collection - NOT TESTED!
+#define LOG_SIZE 3000  //
+float current_log[LOG_SIZE]; //buffer
+volatile uint16_t log_index = 0; //counter
+volatile uint8_t is_logging = 0; // 1 = recording, 0 = done
+
+/* USER CODE END 0 */
+
+/**
+  * @brief  The application entry point.
+  * @retval int
+  */
+int main(void)
+{
+
+  /* USER CODE BEGIN 1 */
+
+  /* USER CODE END 1 */
+
+  /* MCU Configuration--------------------------------------------------------*/
+
+  /* Reset of all peripherals, Initializes the Flash interface and the Systick. */
+  HAL_Init();
+
+  /* USER CODE BEGIN Init */
+
+  /* USER CODE END Init */
+
+  /* Configure the system clock */
+  SystemClock_Config();
+
+  /* USER CODE BEGIN SysInit */
+
+  /* USER CODE END SysInit */
+
+  /* Initialize all configured peripherals */
+  MX_GPIO_Init();
+  MX_ADC1_Init();
+  MX_TIM1_Init();
+  MX_ICACHE_Init();
+  MX_USART3_UART_Init();
+  MX_TIM2_Init();
+  /* USER CODE BEGIN 2 */
+  HAL_TIM_Base_Start_IT(&htim1);
+  HAL_TIM_Base_Start_IT(&htim2);
+  /* Run ADC self-calibration */
+  HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
+
+  HAL_ADC_Start(&hadc1);
+  HAL_ADC_Start_IT(&hadc1); // <--- Add this to prime the ADC
+
+
+  char message[64] = {'\0'};
+  //Determine the starting position of motor by reading IO input
+  uint8_t hes_state = 0;
+  //poll for initial commutation
+  hes_state = read_hall_sensors();
+  perform_BLDC_commutation(hes_state, duty_cycle_register);
+  uint32_t last_print_time = 0;
+  /* USER CODE END 2 */
+
+  /* Infinite loop */
+  /* USER CODE BEGIN WHILE */
+  while (1)
+  {
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
+	  //if (HAL_GetTick() - last_print_time >= 100){
+	      // 1. Calculate the actual elapsed time since the last print
+//	      uint32_t current_time = HAL_GetTick();
+//
+//	      uint32_t raw_adc = ADC_current_value;
+//
+//	      // Calculate voltage in millivolts
+//	      uint32_t volt_mv = (raw_adc * 3300) / 4095;
+//
+//	      // Calculate current in mA
+//	      int32_t current_mA = ((int32_t)volt_mv - 1530) * 5;
+//
+//	      // Convert float duty cycle to an integer percentage
+//	      int32_t duty_pct = (int32_t)(duty_cycle_register * 100.0f);
+//
+//	      // 2. Updated sprintf to include the Delta Time (dt)
+//	      // Format: "dt: 100ms | mA: 500 | Duty: 8%"
+//	      int len = sprintf(message, "dt: %lums | mA: %ld | Duty: %ld%%\r\n", current_time, current_mA, duty_pct);
+//
+//	      HAL_UART_Transmit(&huart3, (uint8_t*)message, len, 10);
+//
+//	      // 3. Update the timestamp using the current_time we captured at the start
+//	      last_print_time = current_time;
+	  //}
+
+	      //check if the user button has been pressed and all logging conditiosn are met
+	      if (counterlol == 1 && is_logging == 0 && log_index == 0) {
+	          is_logging = 1; // Start the high-speed capture
+	      }
+
+	      //Check if end of logging conditiosn are met -> send al the data through serial to le python
+	      if (is_logging == 0 && log_index == LOG_SIZE) {
+	          // Dump data to Python
+	          for (int i = 0; i < LOG_SIZE; i++) {
+	              char dump_msg[32];
+	              int len = sprintf(dump_msg, "%.2f\n", current_log[i]);
+	              HAL_UART_Transmit(&huart3, (uint8_t*)dump_msg, len, 10);
+	          }
+
+	          log_index = 0; // Reset for next time
+	      }
+
+
+
+  }
+  /* USER CODE END 3 */
+}
+
+/**
+  * @brief System Clock Configuration
+  * @retval None
+  */
+void SystemClock_Config(void)
+{
+  RCC_OscInitTypeDef RCC_OscInitStruct = {0};
+  RCC_ClkInitTypeDef RCC_ClkInitStruct = {0};
+
+  /** Configure the main internal regulator output voltage
+  */
+  __HAL_PWR_VOLTAGESCALING_CONFIG(PWR_REGULATOR_VOLTAGE_SCALE0);
+
+  while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
+
+  /** Initializes the RCC Oscillators according to the specified parameters
+  * in the RCC_OscInitTypeDef structure.
+  */
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_CSI;
+  RCC_OscInitStruct.CSIState = RCC_CSI_ON;
+  RCC_OscInitStruct.CSICalibrationValue = RCC_CSICALIBRATION_DEFAULT;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLL1_SOURCE_CSI;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 125;
+  RCC_OscInitStruct.PLL.PLLP = 2;
+  RCC_OscInitStruct.PLL.PLLQ = 2;
+  RCC_OscInitStruct.PLL.PLLR = 2;
+  RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1_VCIRANGE_2;
+  RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1_VCORANGE_WIDE;
+  RCC_OscInitStruct.PLL.PLLFRACN = 0;
+  if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Initializes the CPU, AHB and APB buses clocks
+  */
+  RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
+                              |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2
+                              |RCC_CLOCKTYPE_PCLK3;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
+  RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB3CLKDivider = RCC_HCLK_DIV1;
+
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure the programming delay
+  */
+  __HAL_FLASH_SET_PROGRAM_DELAY(FLASH_PROGRAMMING_DELAY_2);
+}
+
+/**
+  * @brief ADC1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ADC1_Init(void)
+{
+
+  /* USER CODE BEGIN ADC1_Init 0 */
+
+  /* USER CODE END ADC1_Init 0 */
+
+  ADC_ChannelConfTypeDef sConfig = {0};
+
+  /* USER CODE BEGIN ADC1_Init 1 */
+
+  /* USER CODE END ADC1_Init 1 */
+
+  /** Common config
+  */
+  hadc1.Instance = ADC1;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV8;
+  hadc1.Init.Resolution = ADC_RESOLUTION_12B;
+  hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
+  hadc1.Init.ScanConvMode = ADC_SCAN_DISABLE;
+  hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
+  hadc1.Init.LowPowerAutoWait = DISABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
+  hadc1.Init.NbrOfConversion = 1;
+  hadc1.Init.DiscontinuousConvMode = DISABLE;
+  hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
+  hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
+  hadc1.Init.DMAContinuousRequests = DISABLE;
+  hadc1.Init.SamplingMode = ADC_SAMPLING_MODE_NORMAL;
+  hadc1.Init.Overrun = ADC_OVR_DATA_PRESERVED;
+  hadc1.Init.OversamplingMode = ENABLE;
+  hadc1.Init.Oversampling.Ratio = ADC_OVERSAMPLING_RATIO_16;
+  hadc1.Init.Oversampling.RightBitShift = ADC_RIGHTBITSHIFT_4;
+  hadc1.Init.Oversampling.TriggeredMode = ADC_TRIGGEREDMODE_SINGLE_TRIGGER;
+  hadc1.Init.Oversampling.OversamplingStopReset = ADC_REGOVERSAMPLING_CONTINUED_MODE;
+  if (HAL_ADC_Init(&hadc1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Regular Channel
+  */
+  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Rank = ADC_REGULAR_RANK_1;
+  sConfig.SamplingTime = ADC_SAMPLETIME_2CYCLES_5;
+  sConfig.SingleDiff = ADC_SINGLE_ENDED;
+  sConfig.OffsetNumber = ADC_OFFSET_NONE;
+  sConfig.Offset = 0;
+  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ADC1_Init 2 */
+
+  /* USER CODE END ADC1_Init 2 */
+
+}
+
+/**
+  * @brief ICACHE Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_ICACHE_Init(void)
+{
+
+  /* USER CODE BEGIN ICACHE_Init 0 */
+
+  /* USER CODE END ICACHE_Init 0 */
+
+  /* USER CODE BEGIN ICACHE_Init 1 */
+
+  /* USER CODE END ICACHE_Init 1 */
+
+  /** Enable instruction cache in 1-way (direct mapped cache)
+  */
+  if (HAL_ICACHE_ConfigAssociativityMode(ICACHE_1WAY) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_ICACHE_Enable() != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN ICACHE_Init 2 */
+
+  /* USER CODE END ICACHE_Init 2 */
+
+}
+
+/**
+  * @brief TIM1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM1_Init(void)
+{
+
+  /* USER CODE BEGIN TIM1_Init 0 */
+
+  /* USER CODE END TIM1_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+  TIM_OC_InitTypeDef sConfigOC = {0};
+  TIM_BreakDeadTimeConfigTypeDef sBreakDeadTimeConfig = {0};
+
+  /* USER CODE BEGIN TIM1_Init 1 */
+
+  /* USER CODE END TIM1_Init 1 */
+  htim1.Instance = TIM1;
+  htim1.Init.Prescaler = 0;
+  htim1.Init.CounterMode = TIM_COUNTERMODE_CENTERALIGNED1;
+  htim1.Init.Period = 6249;
+  htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim1.Init.RepetitionCounter = 0;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  if (HAL_TIM_Base_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim1, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_UPDATE;
+  sMasterConfig.MasterOutputTrigger2 = TIM_TRGO2_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_ENABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim1, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sConfigOC.OCMode = TIM_OCMODE_PWM1;
+  sConfigOC.Pulse = 1562;
+  sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
+  sConfigOC.OCNPolarity = TIM_OCNPOLARITY_LOW;
+  sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
+  sConfigOC.OCIdleState = TIM_OCIDLESTATE_RESET;
+  sConfigOC.OCNIdleState = TIM_OCNIDLESTATE_SET;
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim1, &sConfigOC, TIM_CHANNEL_4) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sBreakDeadTimeConfig.OffStateRunMode = TIM_OSSR_ENABLE;
+  sBreakDeadTimeConfig.OffStateIDLEMode = TIM_OSSI_ENABLE;
+  sBreakDeadTimeConfig.LockLevel = TIM_LOCKLEVEL_OFF;
+  sBreakDeadTimeConfig.DeadTime = 200;
+  sBreakDeadTimeConfig.BreakState = TIM_BREAK_DISABLE;
+  sBreakDeadTimeConfig.BreakPolarity = TIM_BREAKPOLARITY_HIGH;
+  sBreakDeadTimeConfig.BreakFilter = 0;
+  sBreakDeadTimeConfig.BreakAFMode = TIM_BREAK_AFMODE_INPUT;
+  sBreakDeadTimeConfig.Break2State = TIM_BREAK2_DISABLE;
+  sBreakDeadTimeConfig.Break2Polarity = TIM_BREAK2POLARITY_HIGH;
+  sBreakDeadTimeConfig.Break2Filter = 0;
+  sBreakDeadTimeConfig.Break2AFMode = TIM_BREAK_AFMODE_INPUT;
+  sBreakDeadTimeConfig.AutomaticOutput = TIM_AUTOMATICOUTPUT_DISABLE;
+  if (HAL_TIMEx_ConfigBreakDeadTime(&htim1, &sBreakDeadTimeConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM1_Init 2 */
+
+  /* USER CODE END TIM1_Init 2 */
+  HAL_TIM_MspPostInit(&htim1);
+
+}
+
+/**
+  * @brief TIM2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_TIM2_Init(void)
+{
+
+  /* USER CODE BEGIN TIM2_Init 0 */
+
+  /* USER CODE END TIM2_Init 0 */
+
+  TIM_ClockConfigTypeDef sClockSourceConfig = {0};
+  TIM_MasterConfigTypeDef sMasterConfig = {0};
+
+  /* USER CODE BEGIN TIM2_Init 1 */
+
+  /* USER CODE END TIM2_Init 1 */
+  htim2.Instance = TIM2;
+  htim2.Init.Prescaler = 24999;
+  htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 999;
+  htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sClockSourceConfig.ClockSource = TIM_CLOCKSOURCE_INTERNAL;
+  if (HAL_TIM_ConfigClockSource(&htim2, &sClockSourceConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  sMasterConfig.MasterOutputTrigger = TIM_TRGO_RESET;
+  sMasterConfig.MasterSlaveMode = TIM_MASTERSLAVEMODE_DISABLE;
+  if (HAL_TIMEx_MasterConfigSynchronization(&htim2, &sMasterConfig) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN TIM2_Init 2 */
+
+  /* USER CODE END TIM2_Init 2 */
+
+}
+
+/**
+  * @brief USART3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART3_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART3_Init 0 */
+
+  /* USER CODE END USART3_Init 0 */
+
+  /* USER CODE BEGIN USART3_Init 1 */
+
+  /* USER CODE END USART3_Init 1 */
+  huart3.Instance = USART3;
+  huart3.Init.BaudRate = 115200;
+  huart3.Init.WordLength = UART_WORDLENGTH_8B;
+  huart3.Init.StopBits = UART_STOPBITS_1;
+  huart3.Init.Parity = UART_PARITY_NONE;
+  huart3.Init.Mode = UART_MODE_TX_RX;
+  huart3.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart3.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart3.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart3.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart3.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart3, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart3, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART3_Init 2 */
+
+  /* USER CODE END USART3_Init 2 */
+
+}
+
+/**
+  * @brief GPIO Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_GPIO_Init(void)
+{
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+  /* USER CODE BEGIN MX_GPIO_Init_1 */
+
+  /* USER CODE END MX_GPIO_Init_1 */
+
+  /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOC_CLK_ENABLE();
+  __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_5, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : HES_B_Pin HES_C_Pin */
+  GPIO_InitStruct.Pin = HES_B_Pin|HES_C_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : HES_A_Pin */
+  GPIO_InitStruct.Pin = HES_A_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING_FALLING;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  HAL_GPIO_Init(HES_A_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /* EXTI interrupt init*/
+  HAL_NVIC_SetPriority(EXTI0_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(EXTI0_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI2_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(EXTI2_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI3_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(EXTI3_IRQn);
+
+  HAL_NVIC_SetPriority(EXTI13_IRQn, 2, 0);
+  HAL_NVIC_EnableIRQ(EXTI13_IRQn);
+
+  /* USER CODE BEGIN MX_GPIO_Init_2 */
+
+  /* USER CODE END MX_GPIO_Init_2 */
+}
+
+/* USER CODE BEGIN 4 */
+
+//Commented out for now
+//void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
+//    if (huart->Instance == USART3) {
+//        if (rx_data == '\n') { // Newline received, end of message
+//            msg_buffer[buffer_index] = '\0'; // Null terminate string
+//            duty_cycle_register = atof(msg_buffer); // Convert string to float
+//
+//            // Apply safety clamps immediately!
+//            if(duty_cycle_register > 0.95f) duty_cycle_register = 0.95f;
+//            if(duty_cycle_register < 0.05f) duty_cycle_register = 0.05f;
+//
+//            buffer_index = 0; // Reset for next message
+//        } else {
+//            if (buffer_index < 9) {
+//                msg_buffer[buffer_index++] = rx_data;
+//            }
+//        }
+//        // CRITICAL: Re-enable the interrupt for the next byte
+//        HAL_UART_Receive_IT(&huart3, &rx_data, 1);
+//    }
+//}
+
+//commented out for now
+//void HAL_UART_ErrorCallback(UART_HandleTypeDef *huart) {
+//    if (huart->Instance == USART3) {
+//        /* 1. Clear all hardware error flags (ORE, NE, FE, PE) */
+//        /* These flags are in the ISR register and cleared via the ICR register */
+//        __HAL_UART_CLEAR_FLAG(huart, UART_CLEAR_OREF | UART_CLEAR_NEF | UART_CLEAR_PEF | UART_CLEAR_FEF);
+//
+//        /* 2. Optional: Discard any 'garbage' data in the hardware FIFO */
+//        __HAL_UART_SEND_REQ(huart, UART_RXDATA_FLUSH_REQUEST);
+//
+//        /* 3. Restart the non-blocking interrupt listener */
+//        /* This moves the state back to BUSY_RX so it can listen again */
+//        HAL_UART_Receive_IT(&huart3, &rx_data, 1);
+//    }
+//}
+
+void HAL_TIM_PeriodElapsedCallback(TIM_HandleTypeDef *htim)
+{
+    if (htim->Instance == TIM1)
+    {
+        // DIR = 0 (Count Up) means the UNDERFLOW (0) was just reached.
+        if ((htim->Instance->CR1 & TIM_CR1_DIR) != 0)
+        {
+        	    HAL_ADC_Start_IT(&hadc1);
+        	    //HAL_GPIO_TogglePin(GPIOB, GPIO_PIN_5);
+        }
+        // ... else is the overflow
+    }
+
+    else if(htim->Instance == TIM2)
+    {
+    	rpm = 20*(HES_counter - previous_timer_count);
+    	previous_timer_count = HES_counter;
+    }
+
+}
+
+float update_PI(PI_Controller *pi, float feedback, float dt) {
+    float error = pi->setpoint - feedback;
+
+    // Proportional term
+    float P = pi->Kp * error;
+
+    // Integral term
+    pi->integral += error * dt;
+
+    // Simple Anti-Windup: Clamp the integral term
+    if (pi->integral > 50.0f) pi->integral = 50.0f;
+    if (pi->integral < -50.0f) pi->integral = -50.0f;
+
+    float I = pi->Ki * pi->integral;
+
+    float output = P + I;
+
+    // Final Output Clamping (Safety)
+    if (output > pi->output_limit) output = pi->output_limit;
+    if (output < 0.05f) output = 0.05f;
+
+    return output;
+}
+
+uint8_t read_hall_sensors(void) {
+    uint8_t state = 0;
+
+    // Read each pin and shift it to the correct bit (Bit 2, Bit 1, Bit 0)
+    state |= (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_0) << 2); // Sensor A to Bit 0
+    state |= (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_2) << 1); // Sensor B to Bit 1
+    state |= (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_3) << 0); // Sensor C to Bit 2
+
+    return state; // Passes a 3-bit value (0-7) to your next function
+}
+
+void perform_BLDC_commutation(uint8_t hes_code, float duty_cycle)
+{
+
+	// STEP 1: Global Safety - Disable Main Output temporarily
+	    __HAL_TIM_MOE_DISABLE(&htim1);
+
+    switch (hes_code)
+    {
+
+        case 0b101: // Phase B high, Phase A switching, Phase C (CH4) floating
+                    // Phase A Switching (CH1)
+        			TIM1->CCR1 = ((1-duty_cycle)*ARR);
+        			HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+        	        HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+
+                    // Phase B High (CH2)
+        	        TIM1->CCR2 = ARR;
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+
+                    // Phase C Floating (CH4)
+                	HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_4);
+                	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
+                    break;
+
+        case 0b100: // Phase C (CH4) high, Phase A switching, Phase B floating
+                    // Phase A Switching (CH1)
+        			TIM1->CCR1 = ((1-duty_cycle)*ARR);
+        			HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+        			HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+                    // Phase B Floating (CH2)
+                	HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);
+                	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+                    // Phase C High (CH4)
+                	TIM1->CCR4 = ARR;
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_4);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+                    break;
+
+        case 0b110: // Phase C (CH4) high, Phase B switching, Phase A floating
+                    // Phase A Floating (CH1)
+                	HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
+                	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+                    // Phase B Switching (CH2)
+                	TIM1->CCR2 = ((1-duty_cycle)*ARR);
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+                    // Phase C High (CH4)
+                	TIM1->CCR4 = ARR;
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_4);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+                    break;
+
+        case 0b010: // Phase A high, Phase B switching, Phase C (CH4) floating
+                    // Phase A High (CH1)
+                	TIM1->CCR1 = ARR;
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+                    // Phase B Switching (CH2)
+                	TIM1->CCR2 = ((1-duty_cycle)*ARR);
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+                    // Phase C Floating (CH4)
+                	HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_4);
+                	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_4);
+                    break;
+
+        case 0b011: // Phase A high, Phase C (CH4) switching, Phase B floating
+                    // Phase A High (CH1)
+        			TIM1->CCR1 = ARR;
+        	        HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_1);
+        	        HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
+                    // Phase B Floating (CH2)
+                	HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_2);
+                	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_2);
+                    // Phase C Switching (CH4)
+                	TIM1->CCR4 = ((1-duty_cycle)*ARR);
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_4);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+                    break;
+
+        case 0b001: // Phase B high, Phase C (CH4) switching, Phase A floating
+                    // Phase A Floating (CH1) //works expect this shit
+                	HAL_TIMEx_PWMN_Stop(&htim1, TIM_CHANNEL_1);
+                	HAL_TIM_PWM_Stop(&htim1, TIM_CHANNEL_1);
+                    // Phase B High (CH2)
+                	TIM1->CCR2 = ARR;
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_2);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+                    // Phase C Switching (CH4)
+                	TIM1->CCR4 = ((1-duty_cycle)*ARR);
+                	HAL_TIMEx_PWMN_Start(&htim1, TIM_CHANNEL_4);
+                	HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);
+                    break;
+
+        default:
+            // Emergency Stop: Force everything inactive
+
+            break;
+    }
+
+        // STEP 4: Global Safety - Re-enable Main Output
+        __HAL_TIM_MOE_ENABLE(&htim1);
+}
+
+void HAL_GPIO_EXTI_Rising_Callback(uint16_t GPIO_Pin)
+{
+    // Check if the interrupt came from any of the Hall Sensor pins
+	//I have commented out the interrupt on the sensor pins (lines 547 to 559)
+	  if (GPIO_Pin == HES_A_Pin || GPIO_Pin == HES_B_Pin || GPIO_Pin == HES_C_Pin)
+    {
+		  // 1. **Read New Hall State**
+        hes_state = read_hall_sensors();
+
+        if(hes_state != last_valid_hes_state){
+        	HES_counter++;
+        	last_valid_hes_state = hes_state;
+        }
+
+        // 2. **Execute Commutation**
+        perform_BLDC_commutation(hes_state, duty_cycle_register);
+
+    }
+
+}
+
+void HAL_GPIO_EXTI_Falling_Callback(uint16_t GPIO_Pin){
+    // Check if the interrupt came from any of the Hall Sensor pins
+	//I have commented out the interrupt on the sensor pins (lines 547 to 559)
+	  if (GPIO_Pin == HES_A_Pin || GPIO_Pin == HES_B_Pin || GPIO_Pin == HES_C_Pin)
+    {
+		  // 1. **Read New Hall State**
+        hes_state = read_hall_sensors();
+
+        if(hes_state != last_valid_hes_state){
+                HES_counter++;
+                last_valid_hes_state = hes_state;
+        }
+
+        // 2. **Execute Commutation**
+        perform_BLDC_commutation(hes_state, duty_cycle_register);
+    }
+
+	  if(GPIO_Pin == B1_Pin){
+		  counterlol++;
+
+		  if(counterlol == 1){
+
+		  }
+
+		  else if(counterlol == 2){
+			  duty_cycle_register = 0.5;
+		  }
+
+		  else if(counterlol == 3){
+			  duty_cycle_register = 0.3;
+		  }
+
+		  else if(counterlol == 4){
+			  duty_cycle_register = 0.2;
+		  }
+
+		  else if(counterlol == 5){
+			  duty_cycle_register = 0.1;
+		  }
+
+		  else if(counterlol == 6){
+		  			  duty_cycle_register = 0.0;
+		  		  }
+
+		  else{
+			  TIM1->CCR1 = 0;
+			  TIM1->CCR2 = 0;
+			  TIM1->CCR4 = 0;
+
+			  __disable_irq();
+
+			  while(1);
+		  }
+	  }
+}
+
+
+void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
+{
+    if(hadc->Instance == ADC1)
+    {
+    	ADC_current_value = HAL_ADC_GetValue(hadc);
+
+    	if(counterlol < 2){
+    		//This implements PI control
+    		uint32_t raw = HAL_ADC_GetValue(hadc);
+    	    uint32_t volt_mv = (raw * 3300) / 4095;
+    	    float current_feedback = (float)((int32_t)volt_mv - 1530) * 5.0f;
+
+    	    //Check if data is still logging
+    	    if (is_logging && log_index < LOG_SIZE) {
+    	    	current_log[log_index++] = current_feedback; //store data in the global buffer and increment counter
+    	    	base_current_counter++;
+
+    	    	if (base_current_counter == 50){
+    	    		motor_current_pi.setpoint = 1000.0f;
+    	    	}
+    	    }
+
+    	    else if (log_index >= LOG_SIZE) {
+    	        is_logging = 0; // Stop when full
+    	    }
+
+    	    if(current_feedback >= 0){
+    	    //update the duty cycle register
+    	    duty_cycle_register = update_PI(&motor_current_pi, current_feedback, 0.00005f);
+
+    	    //Update the duty cycle of the switches
+    	    perform_BLDC_commutation(read_hall_sensors(), duty_cycle_register);
+    	    }
+    	}
+    }
+}
+
+/* USER CODE END 4 */
+
+/**
+  * @brief  This function is executed in case of error occurrence.
+  * @retval None
+  */
+void Error_Handler(void)
+{
+  /* USER CODE BEGIN Error_Handler_Debug */
+  /* User can add his own implementation to report the HAL error return state */
+  __disable_irq();
+  while (1)
+  {
+  }
+  /* USER CODE END Error_Handler_Debug */
+}
+#ifdef USE_FULL_ASSERT
+/**
+  * @brief  Reports the name of the source file and the source line number
+  *         where the assert_param error has occurred.
+  * @param  file: pointer to the source file name
+  * @param  line: assert_param error line source number
+  * @retval None
+  */
+void assert_failed(uint8_t *file, uint32_t line)
+{
+  /* USER CODE BEGIN 6 */
+  /* User can add his own implementation to report the file name and line number,
+     ex: printf("Wrong parameters value: file %s on line %d\r\n", file, line) */
+  /* USER CODE END 6 */
+}
+#endif /* USE_FULL_ASSERT */
